@@ -3,11 +3,16 @@ package co.neatfolk.triptracker
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import android.widget.Toast
+import android.widget.TextView
 import co.neatfolk.triptracker.data.TripDatabase
 import co.neatfolk.triptracker.data.TripMetadata
 import kotlinx.coroutines.*
@@ -16,6 +21,7 @@ import kotlinx.coroutines.*
  * Monitors Grab Driver app screens passively.
  * v4.1-alpha: Toast debug signals on every screen detection event.
  * v4.1-alpha: isPostTrip() excludes Job Details history screen.
+ * v4.2-alpha: Top-screen overlay replaces Toast — Android 11+ ignores Toast.setGravity().
  */
 class GrabAccessibilityService : AccessibilityService() {
 
@@ -30,10 +36,51 @@ class GrabAccessibilityService : AccessibilityService() {
 
     private val GRAB_DRIVER_PACKAGE = "com.grabtaxi.driver2"
 
-    // v4.1-alpha: post Toasts on main thread — requires POST_NOTIFICATIONS permission
+    // Tracks current overlay so previous one is removed before showing next
+    private var currentToastView: TextView? = null
+
+    // v4.2-alpha: WindowManager overlay positioned at top — Toast.setGravity ignored on Android 11+
     private fun toast(msg: String) {
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         Handler(Looper.getMainLooper()).post {
-            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+            try {
+                currentToastView?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+
+                val tv = TextView(this).apply {
+                    text = msg
+                    setTextColor(Color.WHITE)
+                    textSize = 13f
+                    setPadding(36, 20, 36, 20)
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor("#CC1a1a1a"))
+                        cornerRadius = 48f
+                    }
+                    gravity = Gravity.CENTER
+                }
+
+                val params = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                    PixelFormat.TRANSLUCENT
+                ).apply {
+                    gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                    y = 150
+                }
+
+                wm.addView(tv, params)
+                currentToastView = tv
+
+                Handler(Looper.getMainLooper()).postDelayed({
+                    try {
+                        wm.removeView(tv)
+                        if (currentToastView == tv) currentToastView = null
+                    } catch (_: Exception) {}
+                }, 3000)
+
+            } catch (_: Exception) {}
         }
     }
 
@@ -156,6 +203,9 @@ class GrabAccessibilityService : AccessibilityService() {
     override fun onInterrupt() { scope.cancel() }
 
     override fun onDestroy() {
+        currentToastView?.let {
+            try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } catch (_: Exception) {}
+        }
         scope.cancel()
         super.onDestroy()
     }

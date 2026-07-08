@@ -25,6 +25,7 @@ import java.io.IOException
  *
  * Token stored in SharedPreferences as "tt_user_token" with expiry.
  * user_id stored as "tt_user_id".
+ * pin stored as "tt_user_pin" — used for automatic token refresh when expired.
  */
 class StoreSync(private val context: Context) {
 
@@ -34,6 +35,8 @@ class StoreSync(private val context: Context) {
         const val TOKEN_KEY     = "tt_user_token"
         const val TOKEN_EXP_KEY = "tt_user_token_exp"
         const val USER_ID_KEY   = "tt_user_id"
+        const val PIN_KEY       = "tt_user_pin"       // stored for auto token refresh
+        const val LAST_SYNC_KEY = "tt_last_sync_ms"   // timestamp of last successful push
         private const val TAG   = "StoreSync"
     }
 
@@ -52,11 +55,18 @@ class StoreSync(private val context: Context) {
 
     fun getUserId(): String? = prefs.getString(USER_ID_KEY, null)
 
+    fun getPin(): String? = prefs.getString(PIN_KEY, null)
+
+    fun getLastSyncMs(): Long = prefs.getLong(LAST_SYNC_KEY, 0L)
+
     fun isAuthenticated(): Boolean = getToken() != null && getUserId() != null
 
-    fun saveCredentials(userId: String, token: String, expiryUnixSeconds: Long) {
+    fun hasStoredCredentials(): Boolean = getUserId() != null && getPin() != null
+
+    fun saveCredentials(userId: String, pin: String, token: String, expiryUnixSeconds: Long) {
         prefs.edit()
             .putString(USER_ID_KEY,   userId)
+            .putString(PIN_KEY,       pin)
             .putString(TOKEN_KEY,     token)
             .putLong(TOKEN_EXP_KEY,   expiryUnixSeconds)
             .apply()
@@ -67,15 +77,58 @@ class StoreSync(private val context: Context) {
             .remove(TOKEN_KEY)
             .remove(TOKEN_EXP_KEY)
             .remove(USER_ID_KEY)
+            .remove(PIN_KEY)
             .apply()
+    }
+
+    // ── Auto token refresh ────────────────────────────────────────────────────
+
+    /**
+     * If the token is still valid, returns true immediately.
+     * If expired but a stored PIN exists, silently re-authenticates and saves
+     * the new token. Returns true on success, false if re-auth fails or no
+     * credentials are stored.
+     *
+     * MUST be called from a background thread (performs network I/O).
+     */
+    fun autoRefreshTokenIfNeeded(): Boolean {
+        if (isAuthenticated()) return true
+        val userId = getUserId() ?: return false
+        val pin    = getPin()    ?: return false
+        return try {
+            val result = authenticate(userId, pin)
+            if (result.success) {
+                saveCredentials(userId, pin, result.token, result.expiryUnixSeconds)
+                Log.i(TAG, "autoRefresh: token refreshed for $userId")
+                true
+            } else {
+                Log.w(TAG, "autoRefresh: re-auth failed — ${result.error}")
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "autoRefresh error: ${e.message}")
+            false
+        }
+    }
+
+    // ── Smart push (auto-refresh + push + record timestamp) ───────────────────
+
+    /**
+     * Preferred push method. Automatically refreshes an expired token before
+     * pushing. Records the timestamp of the last successful push so MainActivity
+     * can display "Synced at HH:mm".
+     *
+     * MUST be called from a background thread.
+     */
+    fun smartPushTrips(trips: List<Trip>): Boolean {
+        if (!autoRefreshTokenIfNeeded()) return false
+        val ok = pushTrips(trips)
+        if (ok) prefs.edit().putLong(LAST_SYNC_KEY, System.currentTimeMillis()).apply()
+        return ok
     }
 
     // ── Registration ──────────────────────────────────────────────────────────
 
-    /**
-     * Register a new driver account.
-     * Returns RegisterResult with token on success, or error message.
-     */
     fun register(userId: String, pin: String): RegisterResult {
         return try {
             val payload = gson.toJson(mapOf("user_id" to userId, "pin" to pin))
@@ -114,11 +167,6 @@ class StoreSync(private val context: Context) {
 
     // ── Authentication ────────────────────────────────────────────────────────
 
-    /**
-     * Authenticate with user_id + PIN.
-     * Returns the token string on success, null on failure.
-     * Sets errorMessage on failure.
-     */
     fun authenticate(userId: String, pin: String): AuthResult {
         return try {
             val payload = gson.toJson(mapOf("user_id" to userId, "pin" to pin))
@@ -151,11 +199,6 @@ class StoreSync(private val context: Context) {
         val expiryUnixSeconds: Long = 0,
         val error: String = ""
     )
-
-    // ── Auto token refresh ────────────────────────────────────────────────────
-    // Called before data operations — refreshes if expired using stored PIN.
-    // Since we don't store PIN, user must re-enter if token expires.
-    // Token is 24h so in practice this is rare during normal daily use.
 
     // ── Fetch trips from store ────────────────────────────────────────────────
 
@@ -209,11 +252,8 @@ class StoreSync(private val context: Context) {
     }
 
     // ── Legacy token methods (kept for backward compat) ───────────────────────
-    // These are no-ops now — token is managed via saveCredentials/clearCredentials
-    @Deprecated("Use saveCredentials instead")
-    fun saveToken(token: String, expiryUnixSeconds: Long) {
-        // No-op — use saveCredentials with userId
-    }
+    @Deprecated("Use saveCredentials(userId, pin, token, expiry) instead")
+    fun saveToken(token: String, expiryUnixSeconds: Long) { /* no-op */ }
 
     @Deprecated("Use clearCredentials instead")
     fun clearToken() = clearCredentials()

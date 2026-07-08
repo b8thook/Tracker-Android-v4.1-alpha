@@ -604,7 +604,8 @@ class FloatingOverlayService : Service() {
         scope.launch {
             db.tripDao().insert(trip)
             sendBroadcast(Intent(ACTION_TRIP_SAVED))
-            if (storeSync.isAuthenticated()) storeSync.pushTrips(db.tripDao().getAll())
+            val ok = storeSync.smartPushTrips(db.tripDao().getAll())
+            sendBroadcast(Intent(ACTION_SYNC_STATUS).putExtra("ok", ok))
         }
     }
 
@@ -710,3 +711,4 @@ class FloatingOverlayService : Service() {
         const val ACTION_TRIP_SAVED = "co.neatfolk.triptracker.TRIP_SAVED"
     }
 }
+

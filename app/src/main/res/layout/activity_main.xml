@@ -50,6 +50,15 @@
                 android:textColor="#A7C4A0"
                 android:textSize="12sp"
                 android:paddingTop="2dp" />
+
+            <TextView
+                android:id="@+id/tvSyncStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Not signed in"
+                android:textColor="#A7C4A0"
+                android:textSize="11sp"
+                android:paddingTop="2dp" />
         </LinearLayout>
 
         <Button

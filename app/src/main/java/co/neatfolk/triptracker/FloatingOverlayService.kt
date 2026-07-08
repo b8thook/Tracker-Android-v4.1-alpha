@@ -709,6 +709,8 @@ class FloatingOverlayService : Service() {
         const val CHANNEL_BOOKING   = "booking_detect"
         const val NOTIF_OVERLAY     = 2001
         const val ACTION_TRIP_SAVED = "co.neatfolk.triptracker.TRIP_SAVED"
+        const val ACTION_SYNC_STATUS = "co.neatfolk.triptracker.SYNC_STATUS"
     }
 }
+
 

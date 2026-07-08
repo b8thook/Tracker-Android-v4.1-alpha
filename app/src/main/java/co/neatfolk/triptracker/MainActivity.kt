@@ -58,8 +58,9 @@ class MainActivity : AppCompatActivity() {
 
     private val syncStatusReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
-            if (intent?.action == FloatingOverlayService.ACTION_SYNC_STATUS) {
-                updateSyncStatus(intent.getBooleanExtra("ok", false))
+            val i = intent ?: return
+            if (i.action == FloatingOverlayService.ACTION_SYNC_STATUS) {
+                updateSyncStatus(i.getBooleanExtra("ok", false))
             }
         }
     }
@@ -1179,4 +1180,5 @@ class MainActivity : AppCompatActivity() {
         const val REQ_CSV_IMPORT = 2001
     }
 }
+
 

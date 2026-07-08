@@ -45,6 +45,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnFilterMonth: Button
     private lateinit var btnFilterYear: Button
     private lateinit var btnFilterAll: Button
+    private lateinit var tvSyncStatus: TextView
 
     // v4.1-alpha: active filter (Today/Week/Month/Year/All)
     private var activeFilter = "Today"
@@ -52,6 +53,14 @@ class MainActivity : AppCompatActivity() {
     private val tripSavedReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
             if (intent?.action == FloatingOverlayService.ACTION_TRIP_SAVED) refreshTrips()
+        }
+    }
+
+    private val syncStatusReceiver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context?, intent: Intent?) {
+            if (intent?.action == FloatingOverlayService.ACTION_SYNC_STATUS) {
+                updateSyncStatus(intent.getBooleanExtra("ok", false))
+            }
         }
     }
 
@@ -83,6 +92,8 @@ class MainActivity : AppCompatActivity() {
         syncFromStoreOnStart()
         registerReceiver(tripSavedReceiver,
             IntentFilter(FloatingOverlayService.ACTION_TRIP_SAVED), RECEIVER_NOT_EXPORTED)
+        registerReceiver(syncStatusReceiver,
+            IntentFilter(FloatingOverlayService.ACTION_SYNC_STATUS), RECEIVER_NOT_EXPORTED)
     }
 
     override fun onResume() {
@@ -90,6 +101,12 @@ class MainActivity : AppCompatActivity() {
         refreshTrips()
         updateHeader()
         checkAccessibilityService()
+        // Show last sync time from stored timestamp
+        val lastSync = storeSync.getLastSyncMs()
+        if (lastSync > 0) updateSyncStatus(true)
+        else if (!storeSync.hasStoredCredentials()) {
+            if (::tvSyncStatus.isInitialized) tvSyncStatus.text = "Not signed in"
+        }
     }
 
     // v4.0-alpha: banner click listener + visibility check
@@ -108,6 +125,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         unregisterReceiver(tripSavedReceiver)
+        try { unregisterReceiver(syncStatusReceiver) } catch (_: Exception) {}
         super.onDestroy()
     }
 
@@ -117,6 +135,7 @@ class MainActivity : AppCompatActivity() {
         tvDate            = findViewById(R.id.tvDate)
         tvTodayEarnings   = findViewById(R.id.tvTodayEarnings)
         tvTripCount       = findViewById(R.id.tvTripCount)
+        tvSyncStatus      = findViewById(R.id.tvSyncStatus)
         tvHint            = findViewById(R.id.tvHint)
         tripListContainer = findViewById(R.id.tripListContainer)
         btnStartOverlay   = findViewById(R.id.btnStartOverlay)
@@ -354,7 +373,7 @@ class MainActivity : AppCompatActivity() {
                 lifecycleScope.launch {
                     withContext(Dispatchers.IO) {
                         db.tripDao().insert(trip)
-                        if (storeSync.isAuthenticated()) storeSync.pushTrips(db.tripDao().getAll())
+                        storeSync.smartPushTrips(db.tripDao().getAll())
                     }
                     refreshTrips()
                     Toast.makeText(this@MainActivity, "Trip added", Toast.LENGTH_SHORT).show()
@@ -419,9 +438,41 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) { 0L }
     }
 
+    // ── Sync status display ───────────────────────────────────────────────────
+
+    private fun updateSyncStatus(ok: Boolean, customMsg: String? = null) {
+        val tv = if (::tvSyncStatus.isInitialized) tvSyncStatus else return
+        if (customMsg != null) {
+            tv.text = customMsg
+            tv.setTextColor(android.graphics.Color.parseColor("#FBBF24"))
+            tv.setOnClickListener(null)
+            return
+        }
+        if (ok) {
+            val lastMs = storeSync.getLastSyncMs()
+            val timeStr = if (lastMs > 0) {
+                java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+                    .format(java.util.Date(lastMs))
+            } else "just now"
+            tv.text = "\u2713 Synced $timeStr"
+            tv.setTextColor(android.graphics.Color.parseColor("#4ADE80"))
+            tv.setOnClickListener(null)
+        } else {
+            tv.text = "\u26A0 Not synced — tap Sync"
+            tv.setTextColor(android.graphics.Color.parseColor("#FBBF24"))
+            tv.setOnClickListener { syncToStore() }
+        }
+    }
+
     private fun syncFromStoreOnStart() {
-        if (!storeSync.isAuthenticated()) return
+        if (!storeSync.isAuthenticated() && !storeSync.hasStoredCredentials()) return
         lifecycleScope.launch {
+            // Auto-refresh expired token using stored PIN
+            val authed = withContext(Dispatchers.IO) { storeSync.autoRefreshTokenIfNeeded() }
+            if (!authed) {
+                updateSyncStatus(false, "Sign in to sync")
+                return@launch
+            }
             val result = withContext(Dispatchers.IO) {
                 try { storeSync.fetchTrips() } catch (_: Exception) { null }
             }
@@ -431,9 +482,14 @@ class MainActivity : AppCompatActivity() {
                     result.forEach { db.tripDao().insert(it) }
                 }
                 refreshTrips()
+                val ok = withContext(Dispatchers.IO) { storeSync.smartPushTrips(db.tripDao().getAll()) }
+                updateSyncStatus(ok)
             } else {
                 val local = withContext(Dispatchers.IO) { db.tripDao().getAll() }
-                if (local.isNotEmpty()) withContext(Dispatchers.IO) { storeSync.pushTrips(local) }
+                val ok = if (local.isNotEmpty()) {
+                    withContext(Dispatchers.IO) { storeSync.smartPushTrips(local) }
+                } else true
+                updateSyncStatus(ok)
             }
         }
     }
@@ -627,7 +683,7 @@ class MainActivity : AppCompatActivity() {
             lifecycleScope.launch {
                 withContext(Dispatchers.IO) {
                     db.tripDao().update(updated)
-                    if (storeSync.isAuthenticated()) storeSync.pushTrips(db.tripDao().getAll())
+                    storeSync.smartPushTrips(db.tripDao().getAll())
                 }
                 refreshTrips()
                 dialog.dismiss()
@@ -644,7 +700,7 @@ class MainActivity : AppCompatActivity() {
                     lifecycleScope.launch {
                         withContext(Dispatchers.IO) {
                             db.tripDao().delete(trip)
-                            if (storeSync.isAuthenticated()) storeSync.pushTrips(db.tripDao().getAll())
+                            storeSync.smartPushTrips(db.tripDao().getAll())
                         }
                         refreshTrips()
                         dialog.dismiss()
@@ -751,7 +807,7 @@ class MainActivity : AppCompatActivity() {
                         imported++
                     }
 
-                    if (storeSync.isAuthenticated()) storeSync.pushTrips(db.tripDao().getAll())
+                    storeSync.smartPushTrips(db.tripDao().getAll())
                     Pair(imported, null)
                 } catch (e: Exception) {
                     Pair(0, "Error reading file: ${e.message}")
@@ -939,7 +995,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { storeSync.authenticate(userId, pin) }
             if (result.success) {
-                storeSync.saveCredentials(userId, result.token, result.expiryUnixSeconds)
+                storeSync.saveCredentials(userId, pin, result.token, result.expiryUnixSeconds)
                 val remoteTrips = withContext(Dispatchers.IO) {
                     try { storeSync.fetchTrips() } catch (_: Exception) { null }
                 }
@@ -974,7 +1030,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { storeSync.register(userId, pin) }
             if (result.success) {
-                storeSync.saveCredentials(userId, result.token, result.expiryUnixSeconds)
+                storeSync.saveCredentials(userId, pin, result.token, result.expiryUnixSeconds)
                 val localTrips = withContext(Dispatchers.IO) { db.tripDao().getAll() }
                 if (localTrips.isNotEmpty()) {
                     withContext(Dispatchers.IO) { storeSync.pushTrips(localTrips) }
@@ -1011,9 +1067,10 @@ class MainActivity : AppCompatActivity() {
                     return@launch
                 }
             }
-            val ok = withContext(Dispatchers.IO) { storeSync.pushTrips(db.tripDao().getAll()) }
+            val ok = withContext(Dispatchers.IO) { storeSync.smartPushTrips(db.tripDao().getAll()) }
+            updateSyncStatus(ok)
             Toast.makeText(this@MainActivity,
-                if (ok) "Synced to store" else "Sync failed - check connection",
+                if (ok) "Synced to store" else "Sync failed - check connection or sign in again",
                 Toast.LENGTH_LONG).show()
         }
     }
@@ -1122,3 +1179,4 @@ class MainActivity : AppCompatActivity() {
         const val REQ_CSV_IMPORT = 2001
     }
 }
+

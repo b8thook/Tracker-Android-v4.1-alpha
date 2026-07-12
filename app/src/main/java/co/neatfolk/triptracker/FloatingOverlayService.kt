@@ -3,7 +3,9 @@ package co.neatfolk.triptracker
 import android.annotation.SuppressLint
 import android.app.*
 import android.content.*
+import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
 import android.location.Location
 import android.os.*
 import android.view.*
@@ -29,6 +31,9 @@ class FloatingOverlayService : Service() {
 
     // v4.0-alpha: stores AS-captured fare so it applies even if dialog opens after broadcast
     private var pendingAutoFare: Double? = null
+
+    // v4.2-alpha: tracks current overlay so previous is removed before showing next
+    private var currentToastView: TextView? = null
 
     private lateinit var fusedLocation: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
@@ -139,6 +144,7 @@ class FloatingOverlayService : Service() {
         fareView?.let { safeRemove(it) }
         try { unregisterReceiver(grabBookingReceiver) } catch (_: Exception) {}
         try { unregisterReceiver(fareCaptureReceiver) } catch (_: Exception) {}
+        currentToastView?.let { safeRemove(it) }
         scope.cancel()
         super.onDestroy()
     }
@@ -364,7 +370,7 @@ class FloatingOverlayService : Service() {
         timerHandler.post(timerTick)
         refreshOverlayDisplay()
         val msg = if (autoStarted) "Trip started — Grab booking detected" else "Trip started"
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        showToast(msg)
     }
 
     // ── Mid-trip actions ──────────────────────────────────────────────────────
@@ -376,14 +382,14 @@ class FloatingOverlayService : Service() {
         pickupLon = currentLon.takeIf { hasFirstFix }
         pickedUpDone = true
         refreshOverlayDisplay()
-        Toast.makeText(this, "Passenger picked up ✓", Toast.LENGTH_SHORT).show()
+        showToast("Passenger picked up ✓")
     }
 
     private fun addStop() {
         if (state != State.TRACKING) return
         stopMs.add(System.currentTimeMillis())
         refreshOverlayDisplay()
-        Toast.makeText(this, "Stop ${stopMs.size} logged ✓", Toast.LENGTH_SHORT).show()
+        showToast("Stop ${stopMs.size} logged ✓")
     }
 
     private fun markDestinationChanged() {
@@ -391,7 +397,7 @@ class FloatingOverlayService : Service() {
         destinationChanged = true
         destChangeDone = true
         refreshOverlayDisplay()
-        Toast.makeText(this, "Destination change noted ✓", Toast.LENGTH_SHORT).show()
+        showToast("Destination change noted ✓")
     }
 
     // ── Trip cancel (swipe left) ──────────────────────────────────────────────
@@ -421,7 +427,7 @@ class FloatingOverlayService : Service() {
             sendBroadcast(Intent(ACTION_TRIP_SAVED))
         }
         refreshOverlayDisplay()
-        Toast.makeText(this, "Trip cancelled", Toast.LENGTH_SHORT).show()
+        showToast("Trip cancelled")
     }
 
     // ── Trip stop (swipe right) ───────────────────────────────────────────────
@@ -533,8 +539,7 @@ class FloatingOverlayService : Service() {
             findViewById<Button>(R.id.btnSave)?.setOnClickListener {
                 val fareVal = fareInput?.text?.toString()?.toDoubleOrNull()
                 if (fareVal == null || fareVal <= 0) {
-                    Toast.makeText(this@FloatingOverlayService,
-                        "Enter the fare from Grab", Toast.LENGTH_SHORT).show()
+                    showToast("Enter the fare from Grab")
                     return@setOnClickListener
                 }
                 val tipVal = tipInput?.text?.toString()?.toDoubleOrNull() ?: 0.0
@@ -574,9 +579,7 @@ class FloatingOverlayService : Service() {
             applyFareToDialog(view, fare)
         } else {
             // Dialog not open yet — pendingAutoFare will apply when showFareDialog() is called
-            Toast.makeText(this,
-                "AS captured S$%.2f - swipe right to end trip and it will auto-fill".format(fare),
-                Toast.LENGTH_LONG).show()
+            showToast("AS captured S\$%.2f - swipe right to end trip and it will auto-fill".format(fare), long = true)
         }
     }
 
@@ -585,7 +588,7 @@ class FloatingOverlayService : Service() {
         etFare.setText("%.2f".format(fare))
         etFare.setBackgroundColor(0x4038A169.toInt())
         timerHandler.postDelayed({ etFare.background = null }, 1500)
-        Toast.makeText(this, "Fare S$%.2f auto-filled from Grab".format(fare), Toast.LENGTH_SHORT).show()
+        showToast("Fare S\$%.2f auto-filled from Grab".format(fare))
         pendingAutoFare = null
     }
 
@@ -599,7 +602,7 @@ class FloatingOverlayService : Service() {
 
         val msg = if (trip.fare != null && trip.fare > 0)
             "S$%.2f saved".format(trip.fare) else "Trip saved"
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        showToast(msg)
 
         scope.launch {
             db.tripDao().insert(trip)
@@ -624,7 +627,7 @@ class FloatingOverlayService : Service() {
         try {
             fusedLocation.requestLocationUpdates(request, locationCallback!!, Looper.getMainLooper())
         } catch (e: SecurityException) {
-            Toast.makeText(this, "Location permission needed", Toast.LENGTH_LONG).show()
+            showToast("Location permission needed", long = true)
             stopSelf()
         }
     }
@@ -703,6 +706,44 @@ class FloatingOverlayService : Service() {
     }
 
     private fun Double.roundToLong(): Long = Math.round(this)
+
+
+    // v4.2-alpha: WindowManager overlay at top — Toast.setGravity() ignored on Android 11+
+    private fun showToast(msg: String, long: Boolean = false) {
+        Handler(Looper.getMainLooper()).post {
+            try {
+                currentToastView?.let { safeRemove(it) }
+                val tv = TextView(this).apply {
+                    text = msg
+                    setTextColor(Color.WHITE)
+                    textSize = 13f
+                    setPadding(36, 20, 36, 20)
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor("#CC1a1a1a"))
+                        cornerRadius = 48f
+                    }
+                    gravity = Gravity.CENTER
+                }
+                val params = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                    PixelFormat.TRANSLUCENT
+                ).apply {
+                    gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                    y = 150
+                }
+                windowManager.addView(tv, params)
+                currentToastView = tv
+                Handler(Looper.getMainLooper()).postDelayed({
+                    safeRemove(tv)
+                    if (currentToastView == tv) currentToastView = null
+                }, if (long) 5000L else 3000L)
+            } catch (_: Exception) {}
+        }
+    }
 
     companion object {
         const val CHANNEL_OVERLAY   = "overlay_svc"

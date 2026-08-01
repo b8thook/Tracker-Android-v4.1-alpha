@@ -151,8 +151,12 @@ class FastScrollBar @JvmOverloads constructor(
         val thumbBottom = thumbCenterY + thumbHeight / 2f
         canvas.drawRoundRect(RectF(w * 0.35f, thumbTop, w - 4f, thumbBottom), 10f, 10f, thumbPaint)
 
-        // Section label bubble, shown only while actively dragging
-        if (isDragging) {
+        // Section label bubble — shown whenever the list is actively moving,
+        // whether that's dragging this thumb directly or just scrolling the
+        // trip list normally with a finger. Originally this only fired for a
+        // direct drag on the thumb, which is a much narrower target than what
+        // "scrolling" actually means in practice.
+        if (isDragging || emphasis > 0.4f) {
             val label = nearestLabel(scrollFraction)
             if (!label.isNullOrEmpty()) {
                 val textWidth = bubbleTextPaint.measureText(label)

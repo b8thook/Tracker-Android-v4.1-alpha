@@ -50,6 +50,7 @@ data class Trip(
     val waitTimeMins: Double = 0.0,              // time from trip start to pickup tap
     val pickupLat: Double? = null,               // GPS at moment of pickup
     val pickupLon: Double? = null,
+    val pickupAutoDetected: Boolean = false,     // v4.3-alpha: true if GPS stop/resume detected it, false if manual tap
 
     // ── NEW: Multi-stop support ───────────────────────────────────────────────
     val isMultiStop: Boolean = false,

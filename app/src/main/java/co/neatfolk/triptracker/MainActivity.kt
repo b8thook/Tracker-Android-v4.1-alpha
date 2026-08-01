@@ -406,8 +406,9 @@ class MainActivity : AppCompatActivity() {
     private fun refreshTrips() {
         lifecycleScope.launch {
             val allTrips = withContext(Dispatchers.IO) { db.tripDao().getAll() }
-            updateTodayStats(allTrips)
-            renderTripList(filterTrips(allTrips))
+            val filtered = filterTrips(allTrips)
+            updatePeriodStats(filtered)
+            renderTripList(filtered)
         }
     }
 
@@ -523,18 +524,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     @SuppressLint("SetTextI18n")
-    private fun updateTodayStats(trips: List<Trip>) {
-        val todayStr = SimpleDateFormat("dd MMM yyyy", Locale.ENGLISH).format(Date())
-        val todayTrips = trips.filter { t ->
-            t.date == todayStr &&
-            !t.cancelled &&
-            (t.distanceKm > 0.0 || (t.fare != null && t.fare > 0.0))
+    private fun updatePeriodStats(filteredTrips: List<Trip>) {
+        val realTrips = filteredTrips.filter { t ->
+            !t.cancelled && (t.distanceKm > 0.0 || (t.fare != null && t.fare > 0.0))
         }
-        val todayEarnings = todayTrips.sumOf { (it.fare ?: 0.0) + it.tip }
-        val count = todayTrips.size
-        tvTodayEarnings.text = "S$%.2f".format(todayEarnings)
-        tvTripCount.text = if (count == 0) "No trips today"
-            else "$count trip${if (count != 1) "s" else ""} today"
+        val earnings = realTrips.sumOf { (it.fare ?: 0.0) + it.tip }
+        val count = realTrips.size
+        val totalMins = realTrips.sumOf { it.durationMin }.toInt()
+        val hrs = totalMins / 60
+        val mins = totalMins % 60
+        val timeStr = if (hrs > 0) "${hrs}h ${mins}m" else "${mins}m"
+
+        val periodLabel = when (activeFilter) {
+            "Today"     -> "today"
+            "Yesterday" -> "yesterday"
+            "Week"      -> "this week"
+            "Month"     -> "this month"
+            "Year"      -> "this year"
+            else        -> "all time"
+        }
+
+        tvTodayEarnings.text = "S$%.2f".format(earnings)
+        tvTripCount.text = if (count == 0) "No trips $periodLabel"
+            else "$count trip${if (count != 1) "s" else ""}  ·  $timeStr  ·  $periodLabel"
     }
 
     // ── Trip list ─────────────────────────────────────────────────────────────

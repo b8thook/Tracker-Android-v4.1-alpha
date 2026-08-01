@@ -46,6 +46,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnFilterYesterday: Button
     private lateinit var btnFilterWeek: Button
     private lateinit var btnFilterMonth: Button
+    private lateinit var btnFilterLastMonth: Button
     private lateinit var btnFilterYear: Button
     private lateinit var btnFilterAll: Button
     private lateinit var tvSyncStatus: TextView
@@ -164,6 +165,7 @@ class MainActivity : AppCompatActivity() {
         btnFilterYesterday = findViewById(R.id.btnFilterYesterday)
         btnFilterWeek     = findViewById(R.id.btnFilterWeek)
         btnFilterMonth    = findViewById(R.id.btnFilterMonth)
+        btnFilterLastMonth = findViewById(R.id.btnFilterLastMonth)
         btnFilterYear     = findViewById(R.id.btnFilterYear)
         btnFilterAll      = findViewById(R.id.btnFilterAll)
         tripScrollView    = findViewById(R.id.tripScrollView)
@@ -231,6 +233,7 @@ class MainActivity : AppCompatActivity() {
             btnFilterYesterday to "Yesterday",
             btnFilterWeek to "Week",
             btnFilterMonth to "Month",
+            btnFilterLastMonth to "LastMonth",
             btnFilterYear to "Year",
             btnFilterAll to "All"
         )
@@ -467,6 +470,27 @@ class MainActivity : AppCompatActivity() {
                 val monthStart = cal.timeInMillis
                 trips.filter { it.startMs >= monthStart || parseDate(it.date) >= monthStart }
             }
+            "LastMonth" -> {
+                // Bounded range, unlike the open-ended "since X" filters above —
+                // needs both a start AND an end (start of last calendar month
+                // through start of this calendar month).
+                cal.add(Calendar.MONTH, -1)
+                cal.set(Calendar.DAY_OF_MONTH, 1)
+                cal.set(Calendar.HOUR_OF_DAY, 0); cal.set(Calendar.MINUTE, 0)
+                cal.set(Calendar.SECOND, 0); cal.set(Calendar.MILLISECOND, 0)
+                val lastMonthStart = cal.timeInMillis
+
+                val thisMonthCal = Calendar.getInstance()
+                thisMonthCal.set(Calendar.DAY_OF_MONTH, 1)
+                thisMonthCal.set(Calendar.HOUR_OF_DAY, 0); thisMonthCal.set(Calendar.MINUTE, 0)
+                thisMonthCal.set(Calendar.SECOND, 0); thisMonthCal.set(Calendar.MILLISECOND, 0)
+                val lastMonthEnd = thisMonthCal.timeInMillis // exclusive upper bound
+
+                trips.filter { t ->
+                    val effMs = if (t.startMs > 0L) t.startMs else parseDate(t.date)
+                    effMs in lastMonthStart until lastMonthEnd
+                }
+            }
             "Year" -> {
                 cal.set(Calendar.DAY_OF_YEAR, 1)
                 cal.set(Calendar.HOUR_OF_DAY, 0); cal.set(Calendar.MINUTE, 0)
@@ -571,6 +595,7 @@ class MainActivity : AppCompatActivity() {
             "Yesterday" -> "yesterday"
             "Week"      -> "this week"
             "Month"     -> "this month"
+            "LastMonth" -> "last month"
             "Year"      -> "this year"
             else        -> "all time"
         }
@@ -593,6 +618,7 @@ class MainActivity : AppCompatActivity() {
                     "Yesterday" -> "yesterday"
                     "Week"      -> "this week"
                     "Month"     -> "this month"
+                    "LastMonth" -> "last month"
                     "Year"      -> "this year"
                     else        -> "yet"
                 }

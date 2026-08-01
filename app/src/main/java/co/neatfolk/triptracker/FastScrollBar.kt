@@ -13,16 +13,18 @@ import android.view.MotionEvent
 import android.view.View
 
 /**
- * v4.3-alpha: right-edge scrubber for the trip history list.
+ * v4.3-alpha (revised): right-edge scrubber for the trip history list.
  *
- * Not tied to a RecyclerView (the list is a plain ScrollView + LinearLayout),
- * so this is a self-contained overlay: MainActivity reports scroll position via
- * [reportScroll], and reports where each date-header sits (as a 0..1 fraction of
- * scrollable range) via [sections]. Dragging the thumb calls [onScrub] with a
- * 0..1 fraction; MainActivity converts that back into a scrollTo() call.
+ * v1 relied entirely on animating the whole View's alpha from 0 -> 1 on scroll,
+ * with a thumb color close to the app's own dark-green theme. Result: on the
+ * dark theme it was effectively invisible, and if the fade animation never
+ * fired, there was no fallback — nothing drew at all.
  *
- * Fades in on scroll or touch, fades out after a short idle period so it never
- * sits on screen as clutter during normal reading.
+ * This version always draws a low-opacity baseline track + thumb (so the
+ * control is discoverable even at rest), and boosts opacity + uses a bright,
+ * theme-independent accent color when the list is actively scrolling or being
+ * dragged. The View's own alpha is never touched — only Paint alpha values
+ * change — so there's no "everything invisible" failure mode.
  */
 class FastScrollBar @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null
@@ -37,15 +39,27 @@ class FastScrollBar @JvmOverloads constructor(
     private var isDragging = false
 
     private val handler = Handler(Looper.getMainLooper())
-    private val hideRunnable = Runnable { fadeTo(0f) }
-    private val idleHideDelayMs = 1100L
+    private val idleRunnable = Runnable { animateEmphasis(0f) }
+    private val idleDelayMs = 1100L
 
-    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#33808080")
+    // 0f = resting baseline, 1f = actively scrolling/dragging
+    private var emphasis = 0f
+    private var emphasisAnimator: ValueAnimator? = null
+
+    companion object {
+        private const val BASELINE_TRACK_ALPHA = 60   // out of 255 — always at least this visible
+        private const val ACTIVE_TRACK_ALPHA   = 130
+        private const val BASELINE_THUMB_ALPHA = 130
+        private const val ACTIVE_THUMB_ALPHA   = 255
     }
-    private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#CC1B5E3B")
-    }
+
+    // Bright amber accent — deliberately different from the app's green branding
+    // so it reads clearly against both the light and dark theme backgrounds.
+    private val thumbColor = Color.parseColor("#F2A93A")
+    private val trackColor = Color.parseColor("#9AA5A0")
+
+    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bubblePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#E8111827")
     }
@@ -55,35 +69,31 @@ class FastScrollBar @JvmOverloads constructor(
         textAlign = Paint.Align.RIGHT
     }
 
-    private var currentAlpha = 0f
-    private var alphaAnimator: ValueAnimator? = null
-
-    init {
-        this.alpha = 0f
-    }
-
-    private fun fadeTo(target: Float) {
-        alphaAnimator?.cancel()
-        alphaAnimator = ValueAnimator.ofFloat(this.alpha, target).apply {
+    private fun animateEmphasis(target: Float) {
+        emphasisAnimator?.cancel()
+        emphasisAnimator = ValueAnimator.ofFloat(emphasis, target).apply {
             duration = 180
-            addUpdateListener { this@FastScrollBar.alpha = it.animatedValue as Float }
+            addUpdateListener {
+                emphasis = it.animatedValue as Float
+                invalidate()
+            }
             start()
         }
     }
 
-    private fun scheduleHide() {
-        handler.removeCallbacks(hideRunnable)
-        if (!isDragging) handler.postDelayed(hideRunnable, idleHideDelayMs)
+    private fun scheduleIdle() {
+        handler.removeCallbacks(idleRunnable)
+        if (!isDragging) handler.postDelayed(idleRunnable, idleDelayMs)
     }
 
     /** Called by MainActivity whenever the ScrollView's scroll position changes. */
     fun reportScroll(scrollY: Int, maxScroll: Int) {
         scrollFraction = if (maxScroll <= 0) 0f else (scrollY.toFloat() / maxScroll).coerceIn(0f, 1f)
         if (!isDragging) {
-            fadeTo(1f)
-            scheduleHide()
-            invalidate()
+            animateEmphasis(1f)
+            scheduleIdle()
         }
+        invalidate()
     }
 
     private fun nearestLabel(fraction: Float): String? {
@@ -95,8 +105,8 @@ class FastScrollBar @JvmOverloads constructor(
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
                 isDragging = true
-                handler.removeCallbacks(hideRunnable)
-                fadeTo(1f)
+                handler.removeCallbacks(idleRunnable)
+                animateEmphasis(1f)
                 updateFromTouch(event.y)
                 return true
             }
@@ -106,7 +116,7 @@ class FastScrollBar @JvmOverloads constructor(
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 isDragging = false
-                scheduleHide()
+                scheduleIdle()
                 invalidate()
                 return true
             }
@@ -125,13 +135,18 @@ class FastScrollBar @JvmOverloads constructor(
         super.onDraw(canvas)
         val w = width.toFloat()
         val h = height.toFloat()
+        if (w <= 0f || h <= 0f) return
 
-        // Subtle full-height track
+        trackPaint.color = trackColor
+        trackPaint.alpha = (BASELINE_TRACK_ALPHA + emphasis * (ACTIVE_TRACK_ALPHA - BASELINE_TRACK_ALPHA)).toInt()
         canvas.drawRoundRect(RectF(w * 0.55f, 8f, w - 4f, h - 8f), 8f, 8f, trackPaint)
 
-        // Thumb, centred on current scroll fraction
+        thumbPaint.color = thumbColor
+        thumbPaint.alpha = (BASELINE_THUMB_ALPHA + emphasis * (ACTIVE_THUMB_ALPHA - BASELINE_THUMB_ALPHA)).toInt()
+
         val thumbHeight = if (isDragging) 64f else 48f
-        val thumbCenterY = 8f + thumbHeight / 2f + scrollFraction * (h - 16f - thumbHeight)
+        val thumbCenterY = (8f + thumbHeight / 2f + scrollFraction * (h - 16f - thumbHeight))
+            .coerceIn(8f + thumbHeight / 2f, h - 8f - thumbHeight / 2f)
         val thumbTop = thumbCenterY - thumbHeight / 2f
         val thumbBottom = thumbCenterY + thumbHeight / 2f
         canvas.drawRoundRect(RectF(w * 0.35f, thumbTop, w - 4f, thumbBottom), 10f, 10f, thumbPaint)

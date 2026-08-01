@@ -67,9 +67,21 @@ class FloatingOverlayService : Service() {
     private var hasFirstFix       = false
 
     // Mid-trip button state
-    private var destinationChanged = false
-    private var pickedUpDone       = false
-    private var destChangeDone     = false
+    private var destinationChanged   = false
+    private var pickedUpDone         = false
+    private var destChangeDone       = false
+    private var pickupAutoDetected   = false
+
+    // v4.3-alpha: GPS motion pattern for auto pickup detection + stop suggestions.
+    // No new location data — reuses the same speed/GPS stream startGPS() already runs.
+    // Values are named constants so they're easy to retune from a future session
+    // without touching the detection logic itself.
+    private var stationarySinceMs: Long? = null
+    private var resumeSinceMs: Long?     = null
+    private var pickupCandidateArmed     = false   // stopped long enough to be a plausible "arrived"
+    private var stopCandidateArmed       = false   // (post-pickup) stopped long enough to suggest logging a stop
+    private var stopSuggestionShown      = false
+    private var stopSuggestionView: View? = null
 
     // Screen dimensions
     private var screenHeight = 0
@@ -142,6 +154,7 @@ class FloatingOverlayService : Service() {
         overlayView?.let { safeRemove(it) }
         closeZoneView?.let { safeRemove(it) }
         fareView?.let { safeRemove(it) }
+        stopSuggestionView?.let { safeRemove(it) }
         try { unregisterReceiver(grabBookingReceiver) } catch (_: Exception) {}
         try { unregisterReceiver(fareCaptureReceiver) } catch (_: Exception) {}
         currentToastView?.let { safeRemove(it) }
@@ -363,8 +376,11 @@ class FloatingOverlayService : Service() {
         destinationChanged = false
         pickedUpDone   = false
         destChangeDone = false
+        pickupAutoDetected = false
         hasFirstFix    = false
         overlayExpanded = false
+        dismissStopSuggestion()
+        resetMotionCandidates()
         state = State.TRACKING
         startGPS()
         timerHandler.post(timerTick)
@@ -375,21 +391,64 @@ class FloatingOverlayService : Service() {
 
     // ── Mid-trip actions ──────────────────────────────────────────────────────
 
-    private fun markPassengerPickedUp() {
-        if (state != State.TRACKING) return
+    private fun markPassengerPickedUp(auto: Boolean = false) {
+        if (state != State.TRACKING || pickedUpDone) return
         pickupMs  = System.currentTimeMillis()
         pickupLat = currentLat.takeIf { hasFirstFix }
         pickupLon = currentLon.takeIf { hasFirstFix }
         pickedUpDone = true
+        pickupAutoDetected = auto
         refreshOverlayDisplay()
-        showToast("Passenger picked up ✓")
+        showToast(if (auto) "Passenger picked up ✓ (auto-detected)" else "Passenger picked up ✓")
     }
 
-    private fun addStop() {
+    private fun addStop(auto: Boolean = false) {
         if (state != State.TRACKING) return
-        stopMs.add(System.currentTimeMillis())
+        val ms = System.currentTimeMillis()
+        stopMs.add(ms)
         refreshOverlayDisplay()
-        showToast("Stop ${stopMs.size} logged ✓")
+        showToast(if (auto) "Stop ${stopMs.size} logged ✓ (auto-detected)" else "Stop ${stopMs.size} logged ✓")
+    }
+
+    // ── v4.3-alpha: "log this stop?" suggestion popup ─────────────────────────
+    @SuppressLint("InflateParams")
+    private fun showStopSuggestion() {
+        if (stopSuggestionShown) return
+        stopSuggestionShown = true
+
+        val view = LayoutInflater.from(this).inflate(R.layout.overlay_stop_suggestion, null)
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = 220
+        }
+
+        view.findViewById<Button>(R.id.btnStopYes)?.setOnClickListener {
+            addStop(auto = true)
+            dismissStopSuggestion()
+        }
+        view.findViewById<Button>(R.id.btnStopNo)?.setOnClickListener {
+            dismissStopSuggestion()
+        }
+
+        try {
+            windowManager.addView(view, params)
+            stopSuggestionView = view
+            timerHandler.postDelayed({ dismissStopSuggestion() }, STOP_SUGGESTION_TIMEOUT_MS)
+        } catch (_: Exception) {
+            stopSuggestionShown = false
+        }
+    }
+
+    private fun dismissStopSuggestion() {
+        stopSuggestionView?.let { safeRemove(it) }
+        stopSuggestionView = null
+        stopSuggestionShown = false
     }
 
     private fun markDestinationChanged() {
@@ -404,6 +463,7 @@ class FloatingOverlayService : Service() {
 
     private fun cancelTrip() {
         cancelCollapse()
+        dismissStopSuggestion()
         stopGPS()
         timerHandler.removeCallbacks(timerTick)
         showCloseZone(false)
@@ -434,6 +494,7 @@ class FloatingOverlayService : Service() {
 
     private fun stopTrip() {
         cancelCollapse()
+        dismissStopSuggestion()
         val endMs = System.currentTimeMillis()
         stopGPS()
         timerHandler.removeCallbacks(timerTick)
@@ -480,6 +541,7 @@ class FloatingOverlayService : Service() {
             waitTimeMins             = waitMins,
             pickupLat                = pickupLat,
             pickupLon                = pickupLon,
+            pickupAutoDetected       = pickupAutoDetected,
             isMultiStop              = stopMs.isNotEmpty(),
             stopCount                = stopMs.size,
             stopsJson                = stopsJson,
@@ -650,6 +712,60 @@ class FloatingOverlayService : Service() {
             if (d in 0.005..2.0) currentDistanceKm += d
         }
         lastLat = loc.latitude; lastLon = loc.longitude
+
+        if (state == State.TRACKING) handleMotionForAutoDetect(speedKmh.toDouble())
+    }
+
+    // ── v4.3-alpha: motion-pattern auto-detection ─────────────────────────────
+    // Drive → stop → resume is the shape of a real pickup or mid-route stop.
+    // This runs off the same GPS stream startGPS() already keeps alive — no
+    // extra permission, no extra battery draw beyond what's already running.
+    private fun handleMotionForAutoDetect(speedKmh: Double) {
+        val now = System.currentTimeMillis()
+        val isStationary = speedKmh < STATIONARY_SPEED_KMH
+        val isResuming    = speedKmh > RESUME_SPEED_KMH
+
+        if (isStationary) {
+            resumeSinceMs = null
+            if (stationarySinceMs == null) stationarySinceMs = now
+            val stationaryFor = now - stationarySinceMs!!
+
+            if (!pickedUpDone && !pickupCandidateArmed && stationaryFor >= PICKUP_STATIONARY_MS) {
+                pickupCandidateArmed = true
+            } else if (pickedUpDone && !stopSuggestionShown && !stopCandidateArmed &&
+                       stationaryFor >= STOP_STATIONARY_MS) {
+                stopCandidateArmed = true
+            }
+            return
+        }
+
+        if (!isResuming) {
+            // Crawling speed — neither a clean stop nor a clean resume. Don't count
+            // this toward "resumed", but don't reset the stationary timer either;
+            // treat it as still part of the same stop episode.
+            resumeSinceMs = null
+            return
+        }
+
+        stationarySinceMs = null
+        if (resumeSinceMs == null) resumeSinceMs = now
+        val resumingFor = now - resumeSinceMs!!
+
+        if (!pickedUpDone && pickupCandidateArmed && resumingFor >= PICKUP_RESUME_SUSTAIN_MS) {
+            markPassengerPickedUp(auto = true)
+            resetMotionCandidates()
+        } else if (pickedUpDone && stopCandidateArmed && !stopSuggestionShown &&
+                   resumingFor >= STOP_RESUME_SUSTAIN_MS) {
+            showStopSuggestion()
+            resetMotionCandidates()
+        }
+    }
+
+    private fun resetMotionCandidates() {
+        stationarySinceMs    = null
+        resumeSinceMs        = null
+        pickupCandidateArmed = false
+        stopCandidateArmed   = false
     }
 
     private fun stopGPS() {
@@ -751,6 +867,27 @@ class FloatingOverlayService : Service() {
         const val NOTIF_OVERLAY     = 2001
         const val ACTION_TRIP_SAVED = "co.neatfolk.triptracker.TRIP_SAVED"
         const val ACTION_SYNC_STATUS = "co.neatfolk.triptracker.SYNC_STATUS"
+
+        // v4.3-alpha: auto pickup / stop-suggestion detection thresholds.
+        // Speed below this = "stationary". Kept low so idling-in-drive doesn't count as moving.
+        const val STATIONARY_SPEED_KMH = 3.0
+        // Speed above this, sustained, = "genuinely moving again" (not just crawling in traffic).
+        const val RESUME_SPEED_KMH = 8.0
+
+        // Pickup: short stationary bar. A missed/late pickup timestamp is low-cost
+        // (only affects wait-time analytics) and the manual button remains as backup,
+        // so we'd rather fire a bit early than miss it — passengers already at the
+        // curb may barely produce a full stop.
+        const val PICKUP_STATIONARY_MS   = 10_000L
+        const val PICKUP_RESUME_SUSTAIN_MS = 5_000L
+
+        // Mid-route stop: longer stationary bar, because a false positive here adds
+        // a spurious stop count to the trip record, unlike pickup timing.
+        const val STOP_STATIONARY_MS     = 30_000L
+        const val STOP_RESUME_SUSTAIN_MS = 5_000L
+
+        // How long the "log this stop?" suggestion stays up before auto-dismissing as "no".
+        const val STOP_SUGGESTION_TIMEOUT_MS = 10_000L
     }
 }
 

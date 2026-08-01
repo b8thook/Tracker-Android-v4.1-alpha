@@ -41,11 +41,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnSettings: Button
     private lateinit var btnAddTrip: Button
     private lateinit var btnFilterDay: Button
+    private lateinit var btnFilterYesterday: Button
     private lateinit var btnFilterWeek: Button
     private lateinit var btnFilterMonth: Button
     private lateinit var btnFilterYear: Button
     private lateinit var btnFilterAll: Button
     private lateinit var tvSyncStatus: TextView
+    private lateinit var tripScrollView: ScrollView
+    private lateinit var fastScrollBar: FastScrollBar
 
     // v4.1-alpha: active filter (Today/Week/Month/Year/All)
     private var activeFilter = "Today"
@@ -145,10 +148,13 @@ class MainActivity : AppCompatActivity() {
         btnSettings       = findViewById(R.id.btnSettings)
         btnAddTrip        = findViewById(R.id.btnAddTrip)
         btnFilterDay      = findViewById(R.id.btnFilterDay)
+        btnFilterYesterday = findViewById(R.id.btnFilterYesterday)
         btnFilterWeek     = findViewById(R.id.btnFilterWeek)
         btnFilterMonth    = findViewById(R.id.btnFilterMonth)
         btnFilterYear     = findViewById(R.id.btnFilterYear)
         btnFilterAll      = findViewById(R.id.btnFilterAll)
+        tripScrollView    = findViewById(R.id.tripScrollView)
+        fastScrollBar     = findViewById(R.id.fastScrollBar)
     }
 
     // ── Buttons ───────────────────────────────────────────────────────────────
@@ -208,6 +214,7 @@ class MainActivity : AppCompatActivity() {
         // v4.1-alpha: filter buttons
         val filterButtons = listOf(
             btnFilterDay to "Today",
+            btnFilterYesterday to "Yesterday",
             btnFilterWeek to "Week",
             btnFilterMonth to "Month",
             btnFilterYear to "Year",
@@ -221,6 +228,16 @@ class MainActivity : AppCompatActivity() {
             }
         }
         updateFilterButtonStyles(filterButtons)
+
+        // v4.3-alpha: fast-scroll bar — drag scrubs the list, scroll shows the thumb
+        tripScrollView.setOnScrollChangeListener { _, _, scrollY, _, _ ->
+            val maxScroll = (tripListContainer.height - tripScrollView.height).coerceAtLeast(0)
+            fastScrollBar.reportScroll(scrollY, maxScroll)
+        }
+        fastScrollBar.onScrub = { fraction ->
+            val maxScroll = (tripListContainer.height - tripScrollView.height).coerceAtLeast(0)
+            tripScrollView.scrollTo(0, (fraction * maxScroll).toInt())
+        }
     }
 
     private fun updateFilterButtonStyles(buttons: List<Pair<Button, String>>) {
@@ -401,6 +418,11 @@ class MainActivity : AppCompatActivity() {
                 val todayStr = SimpleDateFormat("dd MMM yyyy", Locale.ENGLISH).format(Date())
                 trips.filter { it.date == todayStr }
             }
+            "Yesterday" -> {
+                cal.add(Calendar.DAY_OF_YEAR, -1)
+                val yesterdayStr = SimpleDateFormat("dd MMM yyyy", Locale.ENGLISH).format(cal.time)
+                trips.filter { it.date == yesterdayStr }
+            }
             "Week" -> {
                 cal.set(Calendar.DAY_OF_WEEK, cal.firstDayOfWeek)
                 cal.set(Calendar.HOUR_OF_DAY, 0); cal.set(Calendar.MINUTE, 0)
@@ -524,11 +546,12 @@ class MainActivity : AppCompatActivity() {
         if (trips.isEmpty()) {
             val empty = TextView(this).apply {
                 val filterLabel = when (activeFilter) {
-                    "Today" -> "today"
-                    "Week"  -> "this week"
-                    "Month" -> "this month"
-                    "Year"  -> "this year"
-                    else    -> "yet"
+                    "Today"     -> "today"
+                    "Yesterday" -> "yesterday"
+                    "Week"      -> "this week"
+                    "Month"     -> "this month"
+                    "Year"      -> "this year"
+                    else        -> "yet"
                 }
                 text = if (activeFilter == "All")
                     "No trips recorded yet.\nStart the overlay and tap the green button when a trip begins."
@@ -540,6 +563,7 @@ class MainActivity : AppCompatActivity() {
                 gravity = android.view.Gravity.CENTER
             }
             tripListContainer.addView(empty)
+            fastScrollBar.sections = emptyList()
             return
         }
 
@@ -559,13 +583,26 @@ class MainActivity : AppCompatActivity() {
                 val cal          = Calendar.getInstance()
                 cal.add(Calendar.DAY_OF_YEAR, -1)
                 val yesterdayStr = SimpleDateFormat("dd MMM yyyy", Locale.ENGLISH).format(cal.time)
-                val headerLabel  = when (trip.date) {
-                    todayStr     -> "Today  ·  ${trip.date}"
-                    yesterdayStr -> "Yesterday  ·  ${trip.date}"
+                val (headerLabel, shortLabel) = when (trip.date) {
+                    todayStr     -> "Today  ·  ${trip.date}" to "Today"
+                    yesterdayStr -> "Yesterday  ·  ${trip.date}" to "Yesterday"
                     else         -> try {
                         val d = SimpleDateFormat("dd MMM yyyy", Locale.ENGLISH).parse(trip.date)!!
-                        SimpleDateFormat("EEEE  ·  dd MMM yyyy", Locale.ENGLISH).format(d)
-                    } catch (_: Exception) { trip.date }
+                        SimpleDateFormat("EEEE  ·  dd MMM yyyy", Locale.ENGLISH).format(d) to
+                            SimpleDateFormat("dd MMM", Locale.ENGLISH).format(d)
+                    } catch (_: Exception) { trip.date to trip.date }
+                }
+
+                // v4.3-alpha: divider line above every header after the first, so each
+                // day group reads as a clearly separate section rather than just a color change.
+                if (index > 0) {
+                    val divider = View(this).apply {
+                        setBackgroundColor(if (isDarkMode) 0xFF1A3A27.toInt() else 0xFFE5E9E6.toInt())
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT, 1.dpToPx()
+                        ).apply { topMargin = 12.dpToPx() }
+                    }
+                    tripListContainer.addView(divider)
                 }
 
                 val header = TextView(this).apply {
@@ -573,8 +610,18 @@ class MainActivity : AppCompatActivity() {
                     textSize = 10f
                     setTypeface(null, android.graphics.Typeface.BOLD)
                     setTextColor(if (isDarkMode) 0xFF5A8A6A.toInt() else 0xFF6B7280.toInt())
-                    setPadding(16.dpToPx(), 20.dpToPx(), 16.dpToPx(), 8.dpToPx())
+                    // v4.3-alpha: full-bleed section band — negative margins cancel the
+                    // container's own 16dp padding so this reads as a section bar, not just text.
+                    setBackgroundColor(if (isDarkMode) 0xFF16241C.toInt() else 0xFFEFF2F0.toInt())
+                    setPadding(16.dpToPx(), 10.dpToPx(), 16.dpToPx(), 10.dpToPx())
                     letterSpacing = 0.08f
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        leftMargin = (-16).dpToPx(); rightMargin = (-16).dpToPx()
+                        topMargin = if (index == 0) 0 else 4.dpToPx()
+                    }
+                    tag = shortLabel
                 }
                 tripListContainer.addView(header)
             }
@@ -629,6 +676,22 @@ class MainActivity : AppCompatActivity() {
                 setBackgroundColor(dividerCol)
             }
             tripListContainer.addView(divider)
+        }
+
+        // v4.3-alpha: build fast-scroll section markers from the date headers just added.
+        // Needs a layout pass first so header.top positions are real pixel values.
+        tripListContainer.post {
+            val viewportHeight = tripScrollView.height
+            val maxScroll = (tripListContainer.height - viewportHeight).coerceAtLeast(1)
+            val computed = mutableListOf<Pair<Float, String>>()
+            for (i in 0 until tripListContainer.childCount) {
+                val child = tripListContainer.getChildAt(i)
+                if (child is TextView && child.tag is String) {
+                    val fraction = (child.top.toFloat() / maxScroll).coerceIn(0f, 1f)
+                    computed.add(fraction to (child.tag as String))
+                }
+            }
+            fastScrollBar.sections = computed
         }
     }
 

@@ -15,6 +15,7 @@ import co.neatfolk.triptracker.data.Trip
 import co.neatfolk.triptracker.data.TripDatabase
 import co.neatfolk.triptracker.sync.StoreSync
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
@@ -54,6 +55,16 @@ class MainActivity : AppCompatActivity() {
 
     // v4.1-alpha: active filter (Today/Week/Month/Year/All)
     private var activeFilter = "Today"
+
+    // v4.3-alpha: tracks the in-flight refreshTrips() coroutine. Rendering is now
+    // chunked (yields periodically for large filters like Month/Year — see
+    // renderTripList), which means a second tap on a filter button before the
+    // first load finishes could previously interleave with it: the button
+    // highlight updates instantly, but the header/list could end up showing
+    // whichever load happened to finish last, not necessarily the most recent
+    // tap. Cancelling any prior job before starting a new one guarantees only
+    // the latest tap's data can ever land on screen.
+    private var refreshJob: Job? = null
 
     private val tripSavedReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
@@ -423,7 +434,8 @@ class MainActivity : AppCompatActivity() {
     // ── Data ──────────────────────────────────────────────────────────────────
 
     private fun refreshTrips() {
-        lifecycleScope.launch {
+        refreshJob?.cancel()
+        refreshJob = lifecycleScope.launch {
             val allTrips = withContext(Dispatchers.IO) { db.tripDao().getAll() }
             val filtered = filterTrips(allTrips)
             updatePeriodStats(filtered)

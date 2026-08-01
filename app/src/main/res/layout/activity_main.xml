@@ -207,6 +207,19 @@
                 android:stateListAnimator="@null" />
 
             <Button
+                android:id="@+id/btnFilterLastMonth"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:text="Last Month"
+                android:textSize="11sp"
+                android:textColor="#FFFFFF"
+                android:background="#9CA3AF"
+                android:paddingStart="14dp"
+                android:paddingEnd="14dp"
+                android:layout_marginEnd="6dp"
+                android:stateListAnimator="@null" />
+
+            <Button
                 android:id="@+id/btnFilterYear"
                 android:layout_width="wrap_content"
                 android:layout_height="32dp"

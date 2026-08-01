@@ -13,18 +13,23 @@ import android.view.MotionEvent
 import android.view.View
 
 /**
- * v4.3-alpha (revised): right-edge scrubber for the trip history list.
+ * v4.3-alpha (revised again): right-edge scrubber for the trip history list.
  *
  * v1 relied entirely on animating the whole View's alpha from 0 -> 1 on scroll,
- * with a thumb color close to the app's own dark-green theme. Result: on the
- * dark theme it was effectively invisible, and if the fade animation never
- * fired, there was no fallback — nothing drew at all.
+ * with a thumb color close to the app's own dark-green theme — invisible on
+ * the dark theme, with no fallback if the animation didn't fire.
  *
- * This version always draws a low-opacity baseline track + thumb (so the
- * control is discoverable even at rest), and boosts opacity + uses a bright,
- * theme-independent accent color when the list is actively scrolling or being
- * dragged. The View's own alpha is never touched — only Paint alpha values
- * change — so there's no "everything invisible" failure mode.
+ * v2 fixed the track/thumb visibility but drew the label bubble directly on
+ * this View's own Canvas, positioned to the left of the thumb. A View's
+ * onDraw is clipped to its own bounds, and this View is only 28dp wide — so
+ * the bubble text, which needs much more horizontal room than that, was
+ * being silently clipped away every time. Track and thumb stayed visible
+ * because they're drawn within the 28dp strip; the bubble never was.
+ *
+ * This version draws only the track + thumb here (both safely within
+ * bounds), and reports the current label + vertical position via
+ * [onLabelUpdate] so MainActivity can position a real sibling TextView —
+ * which isn't constrained by this View's narrow bounds.
  */
 class FastScrollBar @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null
@@ -35,8 +40,13 @@ class FastScrollBar @JvmOverloads constructor(
 
     var onScrub: ((Float) -> Unit)? = null
 
+    // label == null means "hide the bubble". centerYFraction is 0..1 relative
+    // to this View's own height, for the Activity to convert to a pixel Y.
+    var onLabelUpdate: ((label: String?, centerYFraction: Float) -> Unit)? = null
+
     private var scrollFraction = 0f
     private var isDragging = false
+    private var lastReportedLabel: String? = null
 
     private val handler = Handler(Looper.getMainLooper())
     private val idleRunnable = Runnable { animateEmphasis(0f) }
@@ -60,14 +70,6 @@ class FastScrollBar @JvmOverloads constructor(
 
     private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val bubblePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#E8111827")
-    }
-    private val bubbleTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        textSize = 34f
-        textAlign = Paint.Align.RIGHT
-    }
 
     private fun animateEmphasis(target: Float) {
         emphasisAnimator?.cancel()
@@ -76,6 +78,7 @@ class FastScrollBar @JvmOverloads constructor(
             addUpdateListener {
                 emphasis = it.animatedValue as Float
                 invalidate()
+                notifyLabel()
             }
             start()
         }
@@ -94,11 +97,29 @@ class FastScrollBar @JvmOverloads constructor(
             scheduleIdle()
         }
         invalidate()
+        notifyLabel()
     }
 
     private fun nearestLabel(fraction: Float): String? {
         if (sections.isEmpty()) return null
         return sections.lastOrNull { it.first <= fraction + 0.001f }?.second ?: sections.first().second
+    }
+
+    // Reports the current label (or null to hide) + where the thumb sits, so
+    // MainActivity can show/hide/reposition the real bubble TextView. Only
+    // fires the callback when something actually changed, to avoid layout
+    // churn on every single scroll-position update.
+    private fun notifyLabel() {
+        val shouldShow = isDragging || emphasis > 0.4f
+        val label = if (shouldShow) nearestLabel(scrollFraction) else null
+        if (label != lastReportedLabel || label != null) {
+            lastReportedLabel = label
+            val h = height.coerceAtLeast(1)
+            val thumbHeight = if (isDragging) 64f else 48f
+            val centerYFraction = ((8f + thumbHeight / 2f + scrollFraction * (h - 16f - thumbHeight)) / h)
+                .coerceIn(0f, 1f)
+            onLabelUpdate?.invoke(label, centerYFraction)
+        }
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -118,6 +139,7 @@ class FastScrollBar @JvmOverloads constructor(
                 isDragging = false
                 scheduleIdle()
                 invalidate()
+                notifyLabel()
                 return true
             }
         }
@@ -129,6 +151,7 @@ class FastScrollBar @JvmOverloads constructor(
         scrollFraction = fraction
         onScrub?.invoke(fraction)
         invalidate()
+        notifyLabel()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -150,30 +173,5 @@ class FastScrollBar @JvmOverloads constructor(
         val thumbTop = thumbCenterY - thumbHeight / 2f
         val thumbBottom = thumbCenterY + thumbHeight / 2f
         canvas.drawRoundRect(RectF(w * 0.35f, thumbTop, w - 4f, thumbBottom), 10f, 10f, thumbPaint)
-
-        // Section label bubble — shown whenever the list is actively moving,
-        // whether that's dragging this thumb directly or just scrolling the
-        // trip list normally with a finger. Originally this only fired for a
-        // direct drag on the thumb, which is a much narrower target than what
-        // "scrolling" actually means in practice.
-        if (isDragging || emphasis > 0.4f) {
-            val label = nearestLabel(scrollFraction)
-            if (!label.isNullOrEmpty()) {
-                val textWidth = bubbleTextPaint.measureText(label)
-                val bubblePadding = 20f
-                val bubbleHeight = 56f
-                val bubbleRight = w * 0.35f - 12f
-                val bubbleLeft = (bubbleRight - textWidth - bubblePadding * 2).coerceAtLeast(0f)
-                val bubbleTop = thumbCenterY - bubbleHeight / 2f
-                val bubbleBottom = thumbCenterY + bubbleHeight / 2f
-                canvas.drawRoundRect(
-                    RectF(bubbleLeft, bubbleTop, bubbleRight, bubbleBottom), 12f, 12f, bubblePaint
-                )
-                canvas.drawText(
-                    label, bubbleRight - bubblePadding, thumbCenterY + bubbleTextPaint.textSize / 3f,
-                    bubbleTextPaint
-                )
-            }
-        }
     }
 }

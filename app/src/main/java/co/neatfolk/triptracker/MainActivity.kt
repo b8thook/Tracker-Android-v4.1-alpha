@@ -17,6 +17,7 @@ import co.neatfolk.triptracker.sync.StoreSync
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -49,6 +50,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvSyncStatus: TextView
     private lateinit var tripScrollView: ScrollView
     private lateinit var fastScrollBar: FastScrollBar
+    private lateinit var tvScrubBubble: TextView
 
     // v4.1-alpha: active filter (Today/Week/Month/Year/All)
     private var activeFilter = "Today"
@@ -155,6 +157,7 @@ class MainActivity : AppCompatActivity() {
         btnFilterAll      = findViewById(R.id.btnFilterAll)
         tripScrollView    = findViewById(R.id.tripScrollView)
         fastScrollBar     = findViewById(R.id.fastScrollBar)
+        tvScrubBubble     = findViewById(R.id.tvScrubBubble)
     }
 
     // ── Buttons ───────────────────────────────────────────────────────────────
@@ -237,6 +240,22 @@ class MainActivity : AppCompatActivity() {
         fastScrollBar.onScrub = { fraction ->
             val maxScroll = (tripListContainer.height - tripScrollView.height).coerceAtLeast(0)
             tripScrollView.scrollTo(0, (fraction * maxScroll).toInt())
+        }
+        // v4.3-alpha: real bubble view, positioned via translationY — not drawn on
+        // FastScrollBar's own Canvas, since that View is only 28dp wide and its
+        // drawing is clipped to its own bounds (that was why the bubble never showed).
+        fastScrollBar.onLabelUpdate = { label, centerYFraction ->
+            if (label == null) {
+                tvScrubBubble.visibility = View.GONE
+            } else {
+                tvScrubBubble.text = label
+                tvScrubBubble.visibility = View.VISIBLE
+                tvScrubBubble.post {
+                    val barHeight = fastScrollBar.height
+                    val rawY = centerYFraction * barHeight - tvScrubBubble.height / 2f
+                    tvScrubBubble.translationY = rawY.coerceIn(0f, (barHeight - tvScrubBubble.height).toFloat().coerceAtLeast(0f))
+                }
+            }
         }
     }
 
@@ -552,7 +571,7 @@ class MainActivity : AppCompatActivity() {
     // ── Trip list ─────────────────────────────────────────────────────────────
 
     @SuppressLint("SetTextI18n")
-    private fun renderTripList(trips: List<Trip>) {
+    private suspend fun renderTripList(trips: List<Trip>) {
         tripListContainer.removeAllViews()
 
         if (trips.isEmpty()) {
@@ -586,7 +605,15 @@ class MainActivity : AppCompatActivity() {
         // v4.1-alpha: track last date to insert date separator headers between days
         var lastDate = ""
 
-        trips.forEachIndexed { index, trip ->
+        for (index in trips.indices) {
+            val trip = trips[index]
+            // v4.3-alpha: yield periodically so a long list (Month/Year/All) doesn't
+            // block the UI thread in one continuous burst. This keeps the app
+            // responsive and lets the list appear progressively rather than
+            // freezing for a stretch and then popping in all at once — which is
+            // what "really slow to load" looks like on a filter with hundreds of trips.
+            if (index > 0 && index % 40 == 0) yield()
+
             // Date separator — shown when date changes between trips
             if (trip.date != lastDate) {
                 lastDate = trip.date

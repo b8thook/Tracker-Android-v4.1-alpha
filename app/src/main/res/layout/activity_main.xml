@@ -168,6 +168,19 @@
                 android:stateListAnimator="@null" />
 
             <Button
+                android:id="@+id/btnFilterYesterday"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:text="Yesterday"
+                android:textSize="11sp"
+                android:textColor="#FFFFFF"
+                android:background="#9CA3AF"
+                android:paddingStart="14dp"
+                android:paddingEnd="14dp"
+                android:layout_marginEnd="6dp"
+                android:stateListAnimator="@null" />
+
+            <Button
                 android:id="@+id/btnFilterWeek"
                 android:layout_width="wrap_content"
                 android:layout_height="32dp"
@@ -220,22 +233,34 @@
         </LinearLayout>
     </HorizontalScrollView>
 
-    <!-- Trip list -->
-    <ScrollView
+    <!-- v4.3-alpha: Trip list, wrapped so the fast-scroll bar can overlay the right edge -->
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        android:fillViewport="true">
+        android:layout_weight="1">
 
-        <LinearLayout
-            android:id="@+id/tripListContainer"
+        <ScrollView
+            android:id="@+id/tripScrollView"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
-            android:paddingBottom="8dp" />
-    </ScrollView>
+            android:layout_height="match_parent"
+            android:fillViewport="true">
+
+            <LinearLayout
+                android:id="@+id/tripListContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:paddingBottom="8dp" />
+        </ScrollView>
+
+        <co.neatfolk.triptracker.FastScrollBar
+            android:id="@+id/fastScrollBar"
+            android:layout_width="28dp"
+            android:layout_height="match_parent"
+            android:layout_gravity="end" />
+    </FrameLayout>
 
     <!-- Bottom bar - 4 buttons including Add Trip -->
     <LinearLayout

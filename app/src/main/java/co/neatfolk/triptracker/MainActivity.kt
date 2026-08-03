@@ -1230,6 +1230,7 @@ class MainActivity : AppCompatActivity() {
             if (connected) "Disconnect store (${userId})" else "Connect to Central Store",
             if (hasNotifAccess) "Auto-start (Notification access granted)"
                 else "Enable auto-start (Notification access)",
+            "View AS debug log",
             "Reset AS capture data",
             "Clear all trip data"
         )
@@ -1249,8 +1250,9 @@ class MainActivity : AppCompatActivity() {
                         else Toast.makeText(this,
                             "Auto-start is active - Grab bookings will auto-start trips",
                             Toast.LENGTH_LONG).show()
-                    4 -> confirmClearMetadata()
-                    5 -> confirmClearAll()
+                    4 -> showAsDebugLog()
+                    5 -> confirmClearMetadata()
+                    6 -> confirmClearAll()
                 }
             }.show()
     }
@@ -1284,6 +1286,30 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this,
             if (newMode) "Dark mode on" else "Light mode on",
             Toast.LENGTH_SHORT).show()
+    }
+
+    // v4.2: viewer for AS diagnostics — Screen 1/3 captures and failed fare parses
+    private fun showAsDebugLog() {
+        val tv = android.widget.TextView(this).apply {
+            text = AsDebugLog.read(this@MainActivity)
+            textSize = 11f
+            setTextIsSelectable(true)
+            typeface = android.graphics.Typeface.MONOSPACE
+            setPadding(16.dpToPx(), 8.dpToPx(), 16.dpToPx(), 8.dpToPx())
+        }
+        val scroll = android.widget.ScrollView(this).apply {
+            addView(tv)
+            post { fullScroll(android.view.View.FOCUS_DOWN) }
+        }
+        AlertDialog.Builder(this, R.style.TripTracker_Dialog)
+            .setTitle("AS Debug Log")
+            .setView(scroll)
+            .setPositiveButton("Close", null)
+            .setNeutralButton("Clear log") { _, _ ->
+                AsDebugLog.clear(this)
+                Toast.makeText(this, "AS debug log cleared", Toast.LENGTH_SHORT).show()
+            }
+            .show()
     }
 
     private fun confirmClearMetadata() {

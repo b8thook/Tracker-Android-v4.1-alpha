@@ -32,6 +32,8 @@ class GrabAccessibilityService : AccessibilityService() {
     private var lastScreen1Ms = 0L
     private var lastScreen3Ms = 0L
     private var lastParsedEventMs = 0L
+    private var lastPostTripSuccessMs = 0L   // v4.2: dedup successful fare captures
+    private var lastPostTripFailLogMs = 0L   // v4.2: throttle "not parsed" logging
     private val DEBOUNCE_MS = 1500L
 
     private val GRAB_DRIVER_PACKAGE = "com.grabtaxi.driver2"
@@ -138,6 +140,12 @@ class GrabAccessibilityService : AccessibilityService() {
             putExtra("dropoffAbbrev", parsed.dropoffAbbrev)
         })
 
+        AsDebugLog.log(this, "SCREEN 1 captured:", listOf(
+            "pickupAbbrev = ${parsed.pickupAbbrev.ifBlank { "(blank)" }}",
+            "dropoffAbbrev = ${parsed.dropoffAbbrev.ifBlank { "(blank)" }}",
+            "estTripMin = ${parsed.estimatedTripMin}"
+        ))
+
         toast("AS: Booking screen detected")
     }
 
@@ -176,6 +184,16 @@ class GrabAccessibilityService : AccessibilityService() {
             putExtra("hasSurge",       parsed.hasSurge)
         })
 
+        // v4.2: log every captured field so Roy can validate against the real trip
+        AsDebugLog.log(this, "SCREEN 3 captured:", listOf(
+            "passenger = ${parsed.passengerName.ifBlank { "(blank)" }}",
+            "pickup = ${parsed.pickupName.ifBlank { "(blank)" }} | ${parsed.pickupAddress.ifBlank { "(blank)" }}",
+            "dropoff = ${parsed.dropoffName.ifBlank { "(blank)" }} | ${parsed.dropoffAddress.ifBlank { "(blank)" }}",
+            "service = ${parsed.serviceType.ifBlank { "(blank)" }}",
+            "estFare = ${parsed.estimatedFare?.let { "S$%.2f".format(it) } ?: "(none)"} | surge=${parsed.hasSurge} | promo=${parsed.hasPromo}",
+            "payment = ${parsed.paymentMethod.ifBlank { "(blank)" }}"
+        ))
+
         toast("AS: Route details captured - ${parsed.pickupAddress.take(20).ifBlank { "address pending" }}")
     }
 
@@ -184,11 +202,25 @@ class GrabAccessibilityService : AccessibilityService() {
     private fun handlePostTrip(root: AccessibilityNodeInfo, now: Long) {
         val actualFare = AccessibilityScreenParser.parsePostTrip(root)
 
-        toast("AS: Post-trip screen detected - fare=${
-            if (actualFare != null) "S$%.2f".format(actualFare) else "not parsed"
-        }")
+        if (actualFare == null) {
+            // v4.2: fare may simply not be rendered yet on the first event —
+            // keep retrying on later events. Log what the AS saw (throttled)
+            // so any real parse failure is diagnosable from the debug log.
+            if (now - lastPostTripFailLogMs > 30_000) {
+                lastPostTripFailLogMs = now
+                AsDebugLog.log(this, "POST-TRIP detected, fare NOT parsed - screen text was:",
+                    AccessibilityScreenParser.dumpTexts(root))
+                toast("AS: Post-trip detected - fare not parsed yet (logged)")
+            }
+            return
+        }
 
-        if (actualFare == null) return
+        // v4.2: dedup — the same completion screen fires many events
+        if (now - lastPostTripSuccessMs < 30_000) return
+        lastPostTripSuccessMs = now
+
+        AsDebugLog.log(this, "POST-TRIP fare parsed: S$%.2f".format(actualFare), emptyList())
+        toast("AS: Post-trip screen detected - fare=S$%.2f".format(actualFare))
 
         scope.launch {
             val latest = db.tripMetadataDao().getLatestUnconfirmed()

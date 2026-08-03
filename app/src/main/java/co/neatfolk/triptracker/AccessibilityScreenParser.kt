@@ -68,7 +68,7 @@ object AccessibilityScreenParser {
         val earnNode = findNodeWithText(root, "You'll earn")
         val earnText = earnNode?.parent?.let { collectAllText(it) }?.joinToString(" ")
             ?: collectAllText(root).firstOrNull { it.contains("You'll earn") } ?: ""
-        val estimatedFare = Regex("""S\$\s*([\d.]+)""").find(earnText)?.groupValues?.get(1)?.toDoubleOrNull()
+        val estimatedFare = parseFareFrom(earnText)
         val hasSurge = earnText.contains("≈") || earnText.contains("surge", ignoreCase = true)
 
         val pickupSection  = extractSection(root, "Pick up")
@@ -108,13 +108,31 @@ object AccessibilityScreenParser {
 
     // ── Post-trip parser ──────────────────────────────────────────────────────
 
-    fun parsePostTrip(root: AccessibilityNodeInfo): Double? {
-        val allText = collectAllText(root)
-        val fareText = allText.firstOrNull { it.matches(Regex("""S\$[\d.]+""")) }
-            ?: allText.firstOrNull { it.contains("S\$") && it.any { c -> c.isDigit() } }
-            ?: return null
-        return Regex("""S\$\s*([\d.]+)""").find(fareText)?.groupValues?.get(1)?.toDoubleOrNull()
+    // v4.2-alpha: tolerant fare pattern — optional "S", optional spaces after "$",
+    // comma or dot decimals. Handles "S$10.30", "S$ 10.30", "$10.30", "S$10,30".
+    private val FARE_REGEX = Regex("""S?\$\s*([0-9]+(?:[.,][0-9]{1,2})?)""")
+
+    private fun parseFareFrom(text: String): Double? {
+        return FARE_REGEX.find(text)
+            ?.groupValues?.get(1)
+            ?.replace(",", ".")
+            ?.toDoubleOrNull()
     }
+
+    fun parsePostTrip(root: AccessibilityNodeInfo): Double? {
+        // 1) Preferred: anchor on the "net earnings" label and search text near it,
+        //    so unrelated S$ figures elsewhere on screen can't win.
+        findNodeWithText(root, "net earnings")?.let { anchor ->
+            val container = anchor.parent ?: anchor
+            val nearby = collectAllText(container).joinToString(" ")
+            parseFareFrom(nearby)?.let { return it }
+        }
+        // 2) Fallback: scan the whole tree text.
+        return parseFareFrom(collectAllText(root).joinToString(" "))
+    }
+
+    // v4.2-alpha: expose collected screen text for debug logging when parsing fails.
+    fun dumpTexts(root: AccessibilityNodeInfo): List<String> = collectAllText(root)
 
     // ── Helper: find node containing text ────────────────────────────────────
 
